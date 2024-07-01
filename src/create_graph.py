@@ -15,8 +15,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 
 def create_graph(dataset: str, extraction_type: str, extraction_model: str, retriever_name: str, processed_retriever_name: str, threshold: float = 0.9,
-                 create_graph_flag: bool = False, cosine_sim_edges: bool = False,
-                 save_facts_only: bool=True):
+                 create_graph_flag: bool = False, cosine_sim_edges: bool = False):
     version = 'v3'
     inter_triple_weight = 1.0
     similarity_max = 1.0
@@ -153,26 +152,6 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
     kb['type'] = 'kb'
     kb_query = pd.concat([kb, query_df])
     kb_query.to_csv('output/query_to_kb.tsv', sep='\t')
-
-    if save_facts_only and not create_graph_flag:
-        node_json = [{'idx': i, 'name': p} for i, p in enumerate(unique_phrases)]
-        kb_phrase_df = pd.DataFrame(unique_phrases)
-        kb_phrase_dict = {p: i for i, p in enumerate(unique_phrases)}
-
-        lose_facts = []
-
-        for triples in triple_tuples:
-            lose_facts.extend([tuple(t) for t in triples])
-
-        lose_fact_dict = {f: i for i, f in enumerate(lose_facts)}
-        fact_json = [{'idx': i, 'head': t[0], 'relation': t[1], 'tail': t[2]} for i, t in enumerate(lose_facts)]
-
-        json.dump(passage_json, open('output/{}_{}_graph_passage_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-        json.dump(node_json, open('output/{}_{}_graph_nodes_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-        json.dump(fact_json, open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-
-        pickle.dump(kb_phrase_dict, open('output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-        pickle.dump(lose_fact_dict, open('output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
     if create_graph_flag:
         print('Creating Graph')
@@ -370,7 +349,6 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--extraction_model', type=str)
     parser.add_argument('--threshold', type=float)
-    parser.add_argument('--save_facts_only', action='store_true')
     parser.add_argument('--create_graph', action='store_true')
     parser.add_argument('--extraction_type', type=str)
     parser.add_argument('--cosine_sim_edges', action='store_true')
@@ -385,5 +363,4 @@ if __name__ == '__main__':
     extraction_type = args.extraction_type
     cosine_sim_edges = args.cosine_sim_edges
 
-    create_graph(dataset, extraction_type, extraction_model, retriever_name, processed_retriever_name, threshold, create_graph_flag, cosine_sim_edges,
-                 args.save_facts_only)
+    create_graph(dataset, extraction_type, extraction_model, retriever_name, processed_retriever_name, threshold, create_graph_flag, cosine_sim_edges)
