@@ -36,6 +36,7 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
     phrases = []
     entities = []
     relations = {}
+    relation_list = set()
     incorrectly_formatted_triples = []
     triples_wo_ner_entity = []
     triple_tuples = []
@@ -80,6 +81,8 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
                     relations[(head_ent, tail_ent)] = clean_triple[1]
 
+                    relation_list.add(clean_triple[1])
+
                     raw_head_ent = triple[0]
                     raw_tail_ent = triple[2]
 
@@ -105,8 +108,9 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
     print('Correct Wiki Format: {} out of {}'.format(correct_wiki_format, len(extracted_triples)))
 
     try:
-        queries_full = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(dataset), sep='\t')
-
+        # queries_full = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(dataset), sep='\t')
+        # musique_queries.entity_and_relations.tsv
+        queries_full = pd.read_csv('output/{}_queries.entity_and_relations.tsv'.format(dataset), sep='\t')
         if 'hotpotqa' in args.dataset:
             queries = json.load(open(f'data/{args.dataset}.json', 'r'))
             questions = [q['question'] for q in queries]
@@ -122,16 +126,21 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
         queries_full = pd.DataFrame([], columns=['question', 'triples'])
     q_entities = []
     q_entities_by_doc = []
-    for doc_ents in tqdm(queries_full.triples):
-        doc_ents = eval(doc_ents)['named_entities']
+    for i, row in queries_full.iterrows():
+        doc_ents = eval(row['triples'])['named_entities']
+        doc_rels = []
+        if not pd.isna(row['relations']):
+            doc_rels = eval(row['relations']).get('relations', [])
         try:
-            clean_doc_ents = [processing_phrases(p) for p in doc_ents]
+            clean_doc_ents = [processing_phrases(p) for p in doc_ents+doc_rels]
         except:
             clean_doc_ents = []
         q_entities.extend(clean_doc_ents)
         q_entities_by_doc.append(clean_doc_ents)
-    unique_phrases = list(np.unique(entities))
-    unique_relations = np.unique(list(relations.values()) + ['equivalent'])
+    relation_list.add('equivalent')
+    relation_list = list(relation_list)
+    unique_phrases = list(np.unique(entities+relation_list))
+    unique_relations = np.unique(relation_list)
     q_phrases = list(np.unique(q_entities))
     all_phrases = copy.deepcopy(unique_phrases)
     all_phrases.extend(q_phrases)
@@ -197,40 +206,59 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
                 fact_id = lose_fact_dict[triple]
 
                 if len(triple) == 3:
-                    relation = triple[1]
-                    triple = np.array(triple)[[0, 2]]
-
+                    # relation = triple[1]
+                    # triple = np.array(triple)[[0, 2]]
+                    head, rel, tail = triple
                     docs_to_facts[(doc_id, fact_id)] = 1
 
-                    for i, phrase in enumerate(triple):
-                        phrase_id = kb_phrase_dict[phrase]
-                        doc_phrases.append(phrase_id)
+                    head_id, rel_id, tail_id = kb_phrase_dict[head], kb_phrase_dict[rel], kb_phrase_dict[tail]
+                    doc_phrases.append(head_id)
+                    facts_to_phrases[(fact_id, head_id)] = 1
+                    
+                    edge1 = (head_id, rel_id)
+                    edge2 = (rel_id, tail_id)
+                    edge3 = (head_id, tail_id)
+                    edge4 = (tail_id, head_id)
+                    # fact_edges.extend([edge1, edge2, edge3, edge4])
 
-                        facts_to_phrases[(fact_id, phrase_id)] = 1
+                    for e in [edge1, edge2, edge3, edge4]:
+                        fact_edges.append(e)
+                        graph[e] = graph.get(e, 0.0) + inter_triple_weight
+                    num_triple_edges += 1
 
-                        for phrase2 in triple[i + 1:]:
-                            phrase2_id = kb_phrase_dict[phrase2]
+                    # head_edges = graph_json.get(head, {})
+                    # edge = phrase_edges.get(phrase2, ('triple', 0))
 
-                            fact_edge_r = (phrase_id, phrase2_id)
-                            fact_edge_l = (phrase2_id, phrase_id)
+                    
+                    # for i, phrase in enumerate(triple):
+                    #     phrase_id = kb_phrase_dict[phrase]
+                        # doc_phrases.append(phrase_id)
 
-                            fact_edges.append(fact_edge_r)
-                            fact_edges.append(fact_edge_l)
+                        # facts_to_phrases[(fact_id, phrase_id)] = 1
 
-                            graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
-                            graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
+                        # for phrase2 in triple[i + 1:]:
+                            # phrase2_id = kb_phrase_dict[phrase2]
 
-                            phrase_edges = graph_json.get(phrase, {})
-                            edge = phrase_edges.get(phrase2, ('triple', 0))
-                            phrase_edges[phrase2] = ('triple', edge[1] + 1)
-                            graph_json[phrase] = phrase_edges
+                            # fact_edge_r = (phrase_id, phrase2_id)
+                            # fact_edge_l = (phrase2_id, phrase_id)
 
-                            phrase_edges = graph_json.get(phrase2, {})
-                            edge = phrase_edges.get(phrase, ('triple', 0))
-                            phrase_edges[phrase] = ('triple', edge[1] + 1)
-                            graph_json[phrase2] = phrase_edges
+                            # fact_edges.append(fact_edge_r)
+                            # fact_edges.append(fact_edge_l)
 
-                            num_triple_edges += 1
+                            # graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
+                            # graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
+
+                            # phrase_edges = graph_json.get(phrase, {})
+                            # edge = phrase_edges.get(phrase2, ('triple', 0))
+                            # phrase_edges[phrase2] = ('triple', edge[1] + 1)
+                            # graph_json[phrase] = phrase_edges
+
+                            # phrase_edges = graph_json.get(phrase2, {})
+                            # edge = phrase_edges.get(phrase, ('triple', 0))
+                            # phrase_edges[phrase] = ('triple', edge[1] + 1)
+                            # graph_json[phrase2] = phrase_edges
+
+                            # num_triple_edges += 1
 
         pickle.dump(docs_to_facts, open('output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(facts_to_phrases, open('output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
@@ -295,11 +323,11 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
                                     num_nns += 1
 
-                                    phrase_edges = graph_json.get(phrase, {})
-                                    edge = phrase_edges.get(phrase2, ('similarity', 0))
-                                    if edge[0] == 'similarity':
-                                        phrase_edges[phrase2] = ('similarity', edge[1] + score)
-                                        graph_json[phrase] = phrase_edges
+                                    # phrase_edges = graph_json.get(phrase, {})
+                                    # edge = phrase_edges.get(phrase2, ('similarity', 0))
+                                    # if edge[0] == 'similarity':
+                                    #     phrase_edges[phrase2] = ('similarity', edge[1] + score)
+                                        # graph_json[phrase] = phrase_edges
 
                 synonym_candidates.append((phrase, synonyms))
 
@@ -338,8 +366,8 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
                 'output/{}_{}_graph_mean_{}_thresh_{}_{}_sim_max_{}_{}.{}.subset.p'.format(dataset, graph_type, threshold,
                                                                                            phrase_type, extraction_type, similarity_max, processed_retriever_name, version), 'wb'))
 
-        json.dump(graph_json, open('output/{}_{}_graph_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type,
-                                                                                                   extraction_type, version), 'w'))
+        # json.dump(graph_json, open('output/{}_{}_graph_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type,
+                                                                                                #    extraction_type, version), 'w'))
 
 
 if __name__ == '__main__':
