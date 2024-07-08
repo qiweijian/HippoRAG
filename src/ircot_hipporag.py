@@ -13,7 +13,9 @@ import json
 
 from tqdm import tqdm
 
-from hipporag import HippoRAG
+from hipporag_v2 import HippoRAG
+import logging
+logger = logging.getLogger(__name__)
 
 ircot_reason_instruction = 'You serve as an intelligent assistant, adept at facilitating users through complex, multi-hop reasoning across multiple documents. This task is illustrated through demonstrations, each consisting of a document set paired with a relevant question and its multi-hop reasoning thoughts. Your task is to generate one thought for current step, DON\'T generate the whole thoughts at once! If you reach what you believe to be the final step, start with "So the answer is:".'
 
@@ -131,7 +133,7 @@ if __name__ == '__main__':
     doc_ensemble = string_to_bool(args.doc_ensemble)
     dpr_only = string_to_bool(args.dpr_only)
 
-    client = init_langchain_model(args.llm, args.llm_model)
+    # client = init_langchain_model(args.llm, args.llm_model)
     llm_model_name_processed = args.llm_model.replace('/', '_').replace('.', '_')
     if args.llm_model == 'gpt-3.5-turbo-1106':  # Default OpenIE system
         colbert_configs = {'root': f'data/lm_vectors/colbert/{args.dataset}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
@@ -227,27 +229,27 @@ if __name__ == '__main__':
         thoughts = []
         retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
 
-        while it < max_steps:  # for each iteration of IRCoT
-            new_thought = reason_step(args.dataset, few_shot_samples, query, retrieved_passages[:args.top_k], thoughts, client)
-            thoughts.append(new_thought)
-            if 'So the answer is:' in new_thought:
-                break
-            it += 1
+        # while it < max_steps:  # for each iteration of IRCoT
+        #     new_thought = reason_step(args.dataset, few_shot_samples, query, retrieved_passages[:args.top_k], thoughts, client)
+        #     thoughts.append(new_thought)
+        #     if 'So the answer is:' in new_thought:
+        #         break
+        #     it += 1
 
-            new_retrieved_passages, new_scores, logs = retrieve_step(new_thought, corpus, args.top_k, rag, args.dataset)
-            all_logs[it] = logs
+        #     new_retrieved_passages, new_scores, logs = retrieve_step(new_thought, corpus, args.top_k, rag, args.dataset)
+        #     all_logs[it] = logs
 
-            for passage, score in zip(new_retrieved_passages, new_scores):
-                if passage in retrieved_passages_dict:
-                    retrieved_passages_dict[passage] = max(retrieved_passages_dict[passage], score)
-                else:
-                    retrieved_passages_dict[passage] = score
+        #     for passage, score in zip(new_retrieved_passages, new_scores):
+        #         if passage in retrieved_passages_dict:
+        #             retrieved_passages_dict[passage] = max(retrieved_passages_dict[passage], score)
+        #         else:
+        #             retrieved_passages_dict[passage] = score
 
-            retrieved_passages, scores = zip(*retrieved_passages_dict.items())
+        #     retrieved_passages, scores = zip(*retrieved_passages_dict.items())
 
-            sorted_passages_scores = sorted(zip(retrieved_passages, scores), key=lambda x: x[1], reverse=True)
-            retrieved_passages, scores = zip(*sorted_passages_scores)
-        # end iteration
+        #     sorted_passages_scores = sorted(zip(retrieved_passages, scores), key=lambda x: x[1], reverse=True)
+        #     retrieved_passages, scores = zip(*sorted_passages_scores)
+        # # end iteration
 
         # calculate recall
         if args.dataset in ['hotpotqa', 'hotpotqa_train']:
@@ -258,6 +260,10 @@ if __name__ == '__main__':
             gold_passages = [item for item in sample['supporting_facts']]
             gold_items = set([item[0] for item in gold_passages])
             retrieved_items = [passage.split('\n')[0].strip() for passage in retrieved_passages]
+        elif args.dataset == "musique":
+            gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
+            gold_items = set([item['title'] + '\n' + item['paragraph_text'] for item in gold_passages])
+            retrieved_items = retrieved_passages
         else:
             gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
             gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
@@ -265,13 +271,13 @@ if __name__ == '__main__':
 
         # calculate metrics
         recall = dict()
-        print(f'idx: {sample_idx + 1} ', end='')
+        logger.debug(f'idx: {sample_idx + 1} ')
         for k in k_list:
             recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
             total_recall[k] += recall[k]
-            print(f'R@{k}: {total_recall[k] / (sample_idx + 1):.4f} ', end='')
-        print()
-        print('[ITERATION]', it, '[PASSAGE]', len(retrieved_passages), '[THOUGHT]', thoughts)
+            logger.debug(f'R@{k}: {total_recall[k] / (sample_idx + 1):.4f} ')
+        # logger.debug()
+        logger.debug('[ITERATION]', it, '[PASSAGE]', len(retrieved_passages), '[THOUGHT]', thoughts)
 
         # record results
         phrases_in_gold_docs = []
