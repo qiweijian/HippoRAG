@@ -21,16 +21,16 @@ class GritWrapper(EmbeddingModelWrapper):
         @param model_name:
         @param kwargs:
         """
-        self.model = GritLM(model_name, torch_dtype='auto', **kwargs)
+        self.model = GritLM(model_name, torch_dtype='auto', device_map="auto", mode="embedding", **kwargs)
 
     def encode_list(self, texts: list, instruction: str, batch_size=96):
-        return self.model.encode(texts, instruction=gritlm_instruction(instruction), batch_size=batch_size)
+        return self.model.encode_corpus(texts, instruction=gritlm_instruction(instruction), batch_size=batch_size)
 
-    def encode_text(self, text: Union[str, List], instruction: str = '', norm=True, return_numpy=False, return_cpu=False):
+    def encode_text(self, text: Union[str, List], instruction: str = '', norm=True, return_numpy=False, return_cpu=False, batch_size=96):
         if isinstance(text, str):
             text = [text]
         if isinstance(text, list):
-            res = self.encode_list(text, instruction)
+            res = self.encode_list(text, instruction, batch_size=batch_size)
         else:
             raise ValueError(f"Expected str or list, got {type(text)}")
         if isinstance(res, torch.Tensor):

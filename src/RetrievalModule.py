@@ -52,6 +52,8 @@ class RetrievalModule:
         try:
             if 'ckpt' in retriever_name:
                 self.plm = AutoModel.load_from_checkpoint(retriever_name)
+            elif 'contriever' in retriever_name:
+                self.plm = AutoModel.from_pretrained("/data/qwj/model/contriever")
             else:
                 self.plm = AutoModel.from_pretrained(retriever_name)
         except:
@@ -187,7 +189,10 @@ class RetrievalModule:
 
     def encode_strings(self, strs_to_encode, pool_method):
         self.plm.to('cuda')
-        tokenizer = AutoTokenizer.from_pretrained(self.retriever_name)
+        if 'contriever' in self.retriever_name:
+            tokenizer = AutoTokenizer.from_pretrained("/data/qwj/model/contriever")
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(self.retriever_name)
 
         # Sorting Strings by length
         sorted_missing_strings = [len(s) for s in strs_to_encode]

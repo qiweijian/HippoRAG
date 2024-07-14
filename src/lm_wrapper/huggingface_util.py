@@ -13,6 +13,8 @@ class HuggingFaceWrapper(EmbeddingModelWrapper):
     def __init__(self, model_name: str, device='cuda'):
         self.model_name = model_name
         self.model_name_processed = model_name.replace('/', '_').replace('.', '_')
+        if 'contriever' in model_name:
+            model_name = '/data/qwj/model/contriever'
         self.model = AutoModel.from_pretrained(model_name).to(device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.device = device
@@ -24,7 +26,8 @@ class HuggingFaceWrapper(EmbeddingModelWrapper):
                 text = [text]
             res = []
             if len(text) > 1:
-                for t in tqdm(text, total=len(text), desc=f"HF model {self.model_name} encoding"):
+                # for t in tqdm(text, total=len(text), desc=f"HF model {self.model_name} encoding"):
+                for t in text:
                     res.append(encoding_func(t, self.tokenizer, self.model, self.device))
             else:
                 res = [encoding_func(text[0], self.tokenizer, self.model, self.device)]
