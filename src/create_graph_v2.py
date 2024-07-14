@@ -219,46 +219,15 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
                     edge2 = (rel_id, tail_id)
                     edge3 = (head_id, tail_id)
                     edge4 = (tail_id, head_id)
-                    # fact_edges.extend([edge1, edge2, edge3, edge4])
+                    # edge5 = (rel_id, head_id)
+                    # edge6 = (tail_id, rel_id)
 
                     for e in [edge1, edge2, edge3, edge4]:
+                    # for e in [edge1, edge2, edge3, edge4, edge5, edge6]:
+                    # for e in [edge1, edge2,]: # don't use bidirectional edges
                         fact_edges.append(e)
                         graph[e] = graph.get(e, 0.0) + inter_triple_weight
                     num_triple_edges += 1
-
-                    # head_edges = graph_json.get(head, {})
-                    # edge = phrase_edges.get(phrase2, ('triple', 0))
-
-                    
-                    # for i, phrase in enumerate(triple):
-                    #     phrase_id = kb_phrase_dict[phrase]
-                        # doc_phrases.append(phrase_id)
-
-                        # facts_to_phrases[(fact_id, phrase_id)] = 1
-
-                        # for phrase2 in triple[i + 1:]:
-                            # phrase2_id = kb_phrase_dict[phrase2]
-
-                            # fact_edge_r = (phrase_id, phrase2_id)
-                            # fact_edge_l = (phrase2_id, phrase_id)
-
-                            # fact_edges.append(fact_edge_r)
-                            # fact_edges.append(fact_edge_l)
-
-                            # graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
-                            # graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
-
-                            # phrase_edges = graph_json.get(phrase, {})
-                            # edge = phrase_edges.get(phrase2, ('triple', 0))
-                            # phrase_edges[phrase2] = ('triple', edge[1] + 1)
-                            # graph_json[phrase] = phrase_edges
-
-                            # phrase_edges = graph_json.get(phrase2, {})
-                            # edge = phrase_edges.get(phrase, ('triple', 0))
-                            # phrase_edges[phrase] = ('triple', edge[1] + 1)
-                            # graph_json[phrase2] = phrase_edges
-
-                            # num_triple_edges += 1
 
         pickle.dump(docs_to_facts, open('output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(facts_to_phrases, open('output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
@@ -280,6 +249,8 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
         if cosine_sim_edges:
             if 'colbert' in retriever_name:
                 kb_similarity = pickle.load(open('data/lm_vectors/colbert/nearest_neighbor_kb_to_kb.p'.format(processed_retriever_name), 'rb'))
+            elif 'grit' in retriever_name:
+                kb_similarity = pickle.load(open('data/lm_vectors/{}/nearest_neighbor_kb_to_kb.p'.format(processed_retriever_name), 'rb'))
             else:
                 kb_similarity = pickle.load(open('data/lm_vectors/{}_mean/nearest_neighbor_kb_to_kb.p'.format(processed_retriever_name), 'rb'))
 
