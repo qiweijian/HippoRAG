@@ -13,7 +13,8 @@ import json
 
 from tqdm import tqdm
 
-from hipporag_v2 import HippoRAG
+from hipporag import HippoRAG
+# from hipporag_v2 import HippoRAG
 import logging
 logger = logging.getLogger(__name__)
 
