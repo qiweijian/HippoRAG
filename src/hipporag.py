@@ -19,7 +19,7 @@ from src.langchain_util import init_langchain_model, LangChainModel
 from src.lm_wrapper.util import init_embedding_model
 from src.named_entity_extraction_parallel import named_entity_recognition
 from src.processing import processing_phrases, min_max_normalize
-
+from src.lm_wrapper.gritlm import GritWrapper
 os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
@@ -517,7 +517,7 @@ class HippoRAG:
             self.logger.info(f'Loaded doc embeddings from {cache_filename}, shape: {self.doc_embedding_mat.shape}')
         else:
             self.doc_embeddings = []
-            self.doc_embedding_mat = self.embed_model.encode_text(self.dataset_df['paragraph'].tolist(), return_cpu=True, return_numpy=True, norm=True)
+            self.doc_embedding_mat = self.embed_model.encode_text(self.dataset_df['paragraph'].tolist(), return_cpu=True, return_numpy=True, norm=True, batch_size=16)
             pickle.dump(self.doc_embedding_mat, open(cache_filename, 'wb'))
             self.logger.info(f'Saved doc embeddings to {cache_filename}, shape: {self.doc_embedding_mat.shape}')
 
@@ -529,7 +529,7 @@ class HippoRAG:
         """
         pageranked_probabilities = []
 
-        for reset_prob in tqdm(reset_prob_chunk, desc='pagerank chunk'):
+        for reset_prob in reset_prob_chunk:
             pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.damping, directed=False,
                                                             weights='weight', reset=reset_prob, implementation='prpack')
 
@@ -599,7 +599,12 @@ class HippoRAG:
         :param query_ner_list:
         :return:
         """
-        query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
+        if isinstance(self.embed_model, GritWrapper):
+            instruction = "Given an entity, retrieve the relevant entities"
+            query_instruction = "<|user|>\n" + instruction + "\n<|embed|>\n" 
+            query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True, instruction=query_instruction)
+        else:
+            query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
 
         # Get Closest Entity Nodes
         prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
