@@ -83,15 +83,16 @@ class HippoRAG:
         self.logger = logging.getLogger(__name__)
 
         try:
-            self.named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.corpus_name), sep='\t')
+            # named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.corpus_name), sep='\t')
+            self.named_entity_cache = pd.read_csv('output/{}_queries.entity_and_relations.tsv'.format(self.corpus_name), sep='\t')
         except Exception as e:
             self.named_entity_cache = pd.DataFrame([], columns=['query', 'triples'])
 
         if 'query' in self.named_entity_cache:
-            self.named_entity_cache = {row['query']: eval(row['triples']) for i, row in
+            self.named_entity_cache = {row['query']: self._extract_phrase(row) for i, row in
                                        self.named_entity_cache.iterrows()}
         elif 'question' in self.named_entity_cache:
-            self.named_entity_cache = {row['question']: eval(row['triples']) for i, row in self.named_entity_cache.iterrows()}
+            self.named_entity_cache = {row['question']: self._extract_phrase(row) for i, row in self.named_entity_cache.iterrows()}
 
         self.embed_model = init_embedding_model(self.linking_retriever_name)
         self.dpr_only = dpr_only
@@ -131,6 +132,15 @@ class HippoRAG:
         if qa_model is None:
             qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
         self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
+
+    def _extract_phrase(self, row: pd.Series):
+        phrase = set(eval(row['triples']).get('named_entities', []))
+        rel_phrases = eval(row['relations']).get('relations', []) if not pd.isna(row['relations']) else []
+        try:
+            phrase.update(rel_phrases)
+        except:
+            pass
+        return list(phrase)
 
     def get_passage_by_idx(self, passage_idx):
         """
@@ -300,7 +310,7 @@ class HippoRAG:
             # Extract Entities
             try:
                 if query in self.named_entity_cache:
-                    query_ner_list = self.named_entity_cache[query]['named_entities']
+                    query_ner_list = self.named_entity_cache[query]
                 else:
                     query_ner_json, total_tokens = named_entity_recognition(self.client, query)
                     query_ner_list = eval(query_ner_json)['named_entities']
@@ -529,7 +539,7 @@ class HippoRAG:
         """
         pageranked_probabilities = []
 
-        for reset_prob in tqdm(reset_prob_chunk, desc='pagerank chunk'):
+        for reset_prob in reset_prob_chunk:
             pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.damping, directed=False,
                                                             weights='weight', reset=reset_prob, implementation='prpack')
 
