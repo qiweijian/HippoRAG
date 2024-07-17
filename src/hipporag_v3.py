@@ -24,61 +24,76 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
+from dataclasses import dataclass, field
+from typing import Optional, Literal
 
-class HippoRAG:
-
-    def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-3.5-turbo-1106',
-                 graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts_and_sim', sim_threshold=0.8, node_specificity=True,
-                 doc_ensemble=False,
-                 colbert_config=None, dpr_only=False, graph_alg='ppr', damping=0.1, recognition_threshold=0.9, corpus_path=None,
-                 qa_model: LangChainModel = None, linking_retriever_name=None):
-        """
-        @param corpus_name: Name of the dataset to use for retrieval
-        @param extraction_model: LLM provider for query NER, e.g., 'openai' or 'together'
-        @param extraction_model_name: LLM name used for query NER
-        @param graph_creating_retriever_name: Retrieval encoder used to link query named entities with query nodes
-        @param extraction_type: Type of NER extraction during indexing
-        @param graph_type: Type of graph used by HippoRAG
-        @param sim_threshold: Synonymy threshold which was used to create the graph that will be used by HippoRAG
-        @param node_specificity: Flag that determines whether node specificity will be used
-        @param doc_ensemble: Flag to determine whether to use uncertainty-based ensembling
-        @param colbert_config: ColBERTv2 configuration
-        @param dpr_only: Flag to determine whether HippoRAG will be used at all
-        @param graph_alg: Type of graph algorithm to be used for retrieval, defaults ot PPR
-        @param damping: Damping factor for PPR
-        @param recognition_threshold: Threshold used for uncertainty-based ensembling.
-        @param corpus_path: path to the corpus file (see the format in README.md), not needed for now if extraction files are already present
-        @param qa_model: QA model
-        """
-
-        self.corpus_name = corpus_name
-        self.extraction_model_name = extraction_model_name
-        self.extraction_model_name_processed = extraction_model_name.replace('/', '_')
-        self.client = init_langchain_model(extraction_model, extraction_model_name)
-        assert graph_creating_retriever_name
-        if linking_retriever_name is None:
-            linking_retriever_name = graph_creating_retriever_name
-        self.graph_creating_retriever_name = graph_creating_retriever_name  # 'colbertv2', 'facebook/contriever', or other HuggingFace models
-        self.graph_creating_retriever_name_processed = graph_creating_retriever_name.replace('/', '_').replace('.', '')
-        self.linking_retriever_name = linking_retriever_name
-        self.linking_retriever_name_processed = linking_retriever_name.replace('/', '_').replace('.', '')
-
-        self.extraction_type = extraction_type
-        self.graph_type = graph_type
-        self.phrase_type = 'ents_only_lower_preprocess'
-        self.sim_threshold = sim_threshold
-        self.node_specificity = node_specificity
-        if colbert_config is None:
-            self.colbert_config = {'root': f'data/lm_vectors/colbert/{corpus_name}',
+@dataclass
+class HipporagConfig:
+    corpus_name: Literal['2wikihopqa', 'hotpotqa', 'musique'] = field(
+        default='hotpotqa', metadata={"help": "Name of the dataset to use for retrieval"}
+    )
+    extraction_model: Literal['openai', 'together'] = field(
+        default='openai', metadata={"help": "LLM provider for query NER, e.g., 'openai' or 'together'"}
+    )
+    extraction_model_name: Literal['meta-llama_Llama-3-8b-chat-hf', 'gpt-3.5-turbo-1106', 'meta-llama_Llama-3-70b-chat-hf'] = field(
+        default='gpt-3.5-turbo-1106', metadata={"help": "The extraction model to be used."}
+    )
+    graph_creating_retriever_name: str = field(
+        default='facebook/contriever', metadata={"help": "Retrieval encoder used to link query named entities with query nodes"}
+    )
+    extraction_type: str = field(
+        default='ner', metadata={"help": "Type of NER extraction during indexing"}
+    )
+    graph_type: str = field(
+        default='facts_and_sim', metadata={"help": "Type of graph used by HippoRAG"}
+    )
+    sim_threshold: float = field(
+        default=0.8, metadata={"help": "Synonymy threshold which was used to create the graph that will be used by HippoRAG"}
+    )
+    node_specificity: bool = field(
+        default=True, metadata={"help": "Flag that determines whether node specificity will be used"}
+    )
+    doc_ensemble: bool = field(
+        default=False, metadata={"help": "Flag to determine whether to use uncertainty-based ensembling"}
+    )
+    colbert_config: Optional[dict] = field(
+        default=None, metadata={"help": "ColBERTv2 configuration"}
+    )
+    dpr_only: bool = field(
+        default=False, metadata={"help": "Flag to determine whether HippoRAG will be used at all"}
+    )
+    graph_alg: str = field(
+        default='ppr', metadata={"help": "Type of graph algorithm to be used for retrieval, defaults to PPR"}
+    )
+    damping: float = field(
+        default=0.1, metadata={"help": "Damping factor for PPR"}
+    )
+    recognition_threshold: float = field(
+        default=0.9, metadata={"help": "Threshold used for uncertainty-based ensembling"}
+    )
+    corpus_path: Optional[str] = field(
+        default=None, metadata={"help": "Path to the corpus file (see the format in README.md), not needed for now if extraction files are already present"}
+    )
+    linking_retriever_name: Optional[str] = field(
+        default=None, metadata={"help": "Retriever name for linking, defaults to graph_creating_retriever_name if None"}
+    )
+    def __post_init__(self):
+        if 'colbert' in self.graph_creating_retriever_name.lower() and self.colbert_config is None:
+            self.colbert_config = {'root': f'data/lm_vectors/colbert/{self.corpus_name}',
                                    'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
-        else:
-            self.colbert_config = colbert_config  # a dict, 'root', 'doc_index_name', 'phrase_index_name'
+        self.phrase_type = 'ents_only_lower_preprocess'
+        self.extraction_model_name_processed = self.extraction_model_name.replace('/', '_')
+        if self.linking_retriever_name is None:
+            self.linking_retriever_name = self.graph_creating_retriever_name
+        self.graph_creating_retriever_name_processed = self.graph_creating_retriever_name.replace('/', '_').replace('.', '')
+        self.linking_retriever_name_processed = self.linking_retriever_name.replace('/', '_').replace('.', '')
+        self.version = 'v3.3'
 
-        self.graph_alg = graph_alg
-        self.damping = damping
-        self.recognition_threshold = recognition_threshold
+class HippoRAGv3:
 
-        self.version = 'v3'
+    def __init__(self, config:HipporagConfig):
+        self.config = config
+        self.client = init_langchain_model(self.config.extraction_model, self.config.extraction_model_name)
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
