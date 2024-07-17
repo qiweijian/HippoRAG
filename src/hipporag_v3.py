@@ -89,6 +89,29 @@ class HipporagConfig:
         self.linking_retriever_name_processed = self.linking_retriever_name.replace('/', '_').replace('.', '')
         self.version = 'v3.3'
 
+        self.path_dict = {
+            'named_entity_cache': 'output/{}_queries.named_entity_output.tsv'.format(self.corpus_name),
+            'corpus_path': 'data/{}_corpus.json'.format(self.corpus_name),
+            'index_file_pattern': 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed),
+            'kb_node_phrase_to_id':'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'lose_fact_dict': 'output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'relations_dict': 'output/{}_{}_graph_relation_dict_{}_{}_{}.{}.subset.p'.format(
+                    self.corpus_name, self.graph_type, self.phrase_type,
+                    self.extraction_type, self.graph_creating_retriever_name_processed, self.version),
+            'docs_to_facts': 'output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'facts_to_phrases': 'output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'docs_to_facts_mat': 'output/{}_{}_graph_doc_to_facts_csr_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'facts_to_phrases_mat': 'output/{}_{}_graph_facts_to_phrases_csr_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
+            'graph_file': 'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, str(self.sim_threshold), self.phrase_type, self.extraction_type, self.graph_creating_retriever_name_processed, self.version),
+            'encoded_string': 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed),
+            'kb_node_phrase_embeddings': 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name),
+            'doc_embeddings_cache': 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+        }
+
+    def get_path(self, key):
+        return self.path_dict.get(key, None)
+        
+
 class HippoRAGv3:
     def __init__(self, config:HipporagConfig):
         self.config = config
@@ -139,7 +162,7 @@ class HippoRAGv3:
 
     def load_queries_cache(self) -> Dict:
         try:
-            named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.config.corpus_name), sep='\t')
+            named_entity_cache = pd.read_csv(self.config.get_path('named_entity_cache'), sep='\t')
         except Exception as e:
             named_entity_cache = pd.DataFrame([], columns=['query', 'triples'])
 
@@ -356,22 +379,22 @@ class HippoRAGv3:
 
     def load_corpus(self):
         if self.corpus_path is None:
-            self.corpus_path = 'data/{}_corpus.json'.format(self.corpus_name)
+            self.corpus_path = self.config.get_path('corpus_path')
         assert os.path.isfile(self.corpus_path), 'Corpus file not found'
         self.corpus = json.load(open(self.corpus_path, 'r'))
         self.dataset_df = pd.DataFrame()
         self.dataset_df['paragraph'] = [p['title'] + '\n' + p['text'] for p in self.corpus]
 
-    def load_index_files(self):
-        index_file_pattern = 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed)
+    def load_openie(self):
+        index_file_pattern = self.config.get_path('index_file_pattern')
         possible_files = glob(index_file_pattern)
         if len(possible_files) == 0:
             self.logger.critical(f'No extraction files found: {index_file_pattern} ; please check if working directory is correct or if the extraction has been done.')
             return
         max_samples = np.max(
-            [int(file.split('{}_'.format(self.extraction_model_name_processed))[1].split('.json')[0]) for file in possible_files])
+            [int(file.split('{}_'.format(self.config.extraction_model_name_processed))[1].split('.json')[0]) for file in possible_files])
         extracted_file = json.load(open(
-            'output/openie_{}_results_{}_{}_{}.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed, max_samples),
+            index_file_pattern[::-1].replace('*', str(max_samples)[::-1], 1)[::-1],
             'r'))
 
         self.extracted_triples = extracted_file['docs']
@@ -396,20 +419,15 @@ class HippoRAGv3:
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
 
+    def load_index_files(self):
+        self.load_openie()
         if self.extraction_model_name != 'gpt-3.5-turbo-1106':
             self.extraction_type = self.extraction_type + '_' + self.extraction_model_name_processed
-        self.kb_node_phrase_to_id = pickle.load(open(
-            'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                      self.extraction_type, self.version), 'rb'))
-        self.lose_fact_dict = pickle.load(open(
-            'output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                    self.extraction_type, self.version), 'rb'))
+        self.kb_node_phrase_to_id = pickle.load(open(self.config.get_path('kb_node_phrase_to_id'), 'rb'))
+        self.lose_fact_dict = pickle.load(open(self.config.get_path('lose_fact_dict'), 'rb'))
 
         try:
-            self.relations_dict = pickle.load(open(
-                'output/{}_{}_graph_relation_dict_{}_{}_{}.{}.subset.p'.format(
-                    self.corpus_name, self.graph_type, self.phrase_type,
-                    self.extraction_type, self.graph_creating_retriever_name_processed, self.version), 'rb'))
+            self.relations_dict = pickle.load(open(self.config.get_path('relations_dict'), 'rb'))
         except:
             pass
 
@@ -417,32 +435,16 @@ class HippoRAGv3:
         self.lose_facts = [self.lose_facts[i] for i in np.argsort(list(self.lose_fact_dict.values()))]
         self.phrases = np.array(list(self.kb_node_phrase_to_id.keys()))[np.argsort(list(self.kb_node_phrase_to_id.values()))]
 
-        self.docs_to_facts = pickle.load(open(
-            'output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                       self.extraction_type, self.version), 'rb'))
-        self.facts_to_phrases = pickle.load(open(
-            'output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                           self.extraction_type, self.version), 'rb'))
-
-        self.docs_to_facts_mat = pickle.load(
-            open(
-                'output/{}_{}_graph_doc_to_facts_csr_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                               self.extraction_type, self.version),
-                'rb'))  # (num docs, num facts)
-        self.facts_to_phrases_mat = pickle.load(open(
-            'output/{}_{}_graph_facts_to_phrases_csr_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
-                                                                               self.extraction_type, self.version),
-            'rb'))  # (num facts, num phrases)
-
+        self.docs_to_facts = pickle.load(open(self.config.get_path('docs_to_facts'), 'rb'))
+        self.facts_to_phrases = pickle.load(open(self.config.get_path('facts_to_phrases'), 'rb'))
+        self.docs_to_facts_mat = pickle.load(open(self.config.get_path('docs_to_facts_mat'), 'rb'))
+        self.facts_to_phrases_mat = pickle.load(open(self.config.get_path('facts_to_phrases_mat'), 'rb'))
+        self.lose_fact_dict = pickle.load(open(self.config.get_path('lose_fact_dict'), 'rb'))
         self.doc_to_phrases_mat = self.docs_to_facts_mat.dot(self.facts_to_phrases_mat)
         self.doc_to_phrases_mat[self.doc_to_phrases_mat.nonzero()] = 1
         self.phrase_to_num_doc = self.doc_to_phrases_mat.sum(0).T
 
-        graph_file_path = 'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type,
-                                                                                          str(self.sim_threshold), self.phrase_type,
-                                                                                          self.extraction_type,
-                                                                                          self.graph_creating_retriever_name_processed,
-                                                                                          self.version)
+        graph_file_path = self.config.get_path('graph_file')
         if os.path.isfile(graph_file_path):
             self.graph_plus = pickle.load(open(graph_file_path, 'rb'))  # (phrase1 id, phrase2 id) -> the number of occurrences
         else:
@@ -486,13 +488,13 @@ class HippoRAGv3:
         self.logger.info(f'Graph built: num vertices: {n_vertices}, num_edges: {len(edges)}')
 
     def load_node_vectors(self):
-        encoded_string_path = 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed)
+        encoded_string_path = self.config.get_path('encoded_string')
         if os.path.isfile(encoded_string_path):
             self.load_node_vectors_from_string_encoding_cache(encoded_string_path)
         else:  # use another way to load node vectors
             if self.linking_retriever_name == 'colbertv2':
                 return
-            kb_node_phrase_embeddings_path = 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+            kb_node_phrase_embeddings_path = self.config.get_path('kb_node_phrase_embeddings')
             if os.path.isfile(kb_node_phrase_embeddings_path):
                 self.kb_node_phrase_embeddings = pickle.load(open(kb_node_phrase_embeddings_path, 'rb'))
                 if len(self.kb_node_phrase_embeddings.shape) == 3:
@@ -507,10 +509,11 @@ class HippoRAGv3:
         self.logger.info('Loading node vectors from: ' + string_file_path)
         kb_vectors = []
         self.strings = open(string_file_path, 'r').readlines()
-        for i in range(len(glob('data/lm_vectors/{}_mean/vecs_*'.format(self.linking_retriever_name_processed)))):
-            kb_vectors.append(
-                torch.Tensor(pickle.load(
-                    open('data/lm_vectors/{}_mean/vecs_{}.p'.format(self.linking_retriever_name_processed, i), 'rb'))))
+        vecs_path_pattern = 'data/lm_vectors/{}_mean/vecs_*'.format(self.config.linking_retriever_name_processed)
+        vecs_paths = glob(vecs_path_pattern)
+        for i in range(len(vecs_paths)):
+            vec_path = 'data/lm_vectors/{}_mean/vecs_{}.p'.format(self.config.linking_retriever_name_processed, i)
+            kb_vectors.append(torch.Tensor(pickle.load(open(vec_path, 'rb'))))
         kb_mat = torch.cat(kb_vectors)  # a matrix of phrase vectors
         self.strings = [s.strip() for s in self.strings]
         self.string_to_id = {string: i for i, string in enumerate(self.strings)}
@@ -530,7 +533,7 @@ class HippoRAGv3:
         self.logger.info('{} phrases did not have vectors.'.format(num_non_vector_phrases))
 
     def get_dpr_doc_embedding(self):
-        cache_filename = 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+        cache_filename = self.config.get_path('doc_embeddings_cache')
         if os.path.exists(cache_filename):
             self.doc_embedding_mat = pickle.load(open(cache_filename, 'rb'))
             self.logger.info(f'Loaded doc embeddings from {cache_filename}, shape: {self.doc_embedding_mat.shape}')
