@@ -654,7 +654,7 @@ class HippoRAGv3:
         all_phrase_weights = np.zeros(len(self.phrases))
 
         for phrase_id in linked_phrase_ids:
-            if self.node_specificity:
+            if self.config.node_specificity:
                 if self.phrase_to_num_doc[phrase_id] == 0:  # just in case the phrase is not recorded in any documents
                     weight = 1
                 else:  # the more frequent the phrase, the less weight it gets
