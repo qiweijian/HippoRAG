@@ -25,7 +25,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
 from dataclasses import dataclass, field
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 
 @dataclass
 class HipporagConfig:
@@ -90,31 +90,26 @@ class HipporagConfig:
         self.version = 'v3.3'
 
 class HippoRAGv3:
-
     def __init__(self, config:HipporagConfig):
         self.config = config
         self.client = init_langchain_model(self.config.extraction_model, self.config.extraction_model_name)
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
-        try:
-            self.named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.corpus_name), sep='\t')
-        except Exception as e:
-            self.named_entity_cache = pd.DataFrame([], columns=['query', 'triples'])
+        self.named_entity_cache = self.load_queries_cache()
 
-        if 'query' in self.named_entity_cache:
-            self.named_entity_cache = {row['query']: eval(row['triples']) for i, row in
-                                       self.named_entity_cache.iterrows()}
-        elif 'question' in self.named_entity_cache:
-            self.named_entity_cache = {row['question']: eval(row['triples']) for i, row in self.named_entity_cache.iterrows()}
+        self.embed_model = init_embedding_model(self.config.linking_retriever_name)
+        self.load_embeddings()
 
-        self.embed_model = init_embedding_model(self.linking_retriever_name)
-        self.dpr_only = dpr_only
-        self.doc_ensemble = doc_ensemble
-        self.corpus_path = corpus_path
+        self.statistics = {}
+        self.ensembling_debug = []
+        if qa_model is None:
+            qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
+        self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
 
+    def load_embeddings(self):
         # Loading Important Corpus Files
-        if not self.dpr_only:
+        if not self.config.dpr_only:
             self.load_index_files()
 
             # Construct Graph
@@ -125,27 +120,36 @@ class HippoRAGv3:
         else:
             self.load_corpus()
 
-        if (doc_ensemble or dpr_only) and self.linking_retriever_name not in ['colbertv2', 'bm25']:
+        if (self.config.doc_ensemble or self.config.dpr_only) and self.config.linking_retriever_name not in ['colbertv2', 'bm25']:
             # Loading Doc Embeddings
             self.get_dpr_doc_embedding()
 
-        if self.linking_retriever_name == 'colbertv2':
-            if self.dpr_only is False or self.doc_ensemble:
-                colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite=True)
-                with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.colbert_config['root'])):
-                    config = ColBERTConfig(root=self.colbert_config['root'], )
+        if self.config.linking_retriever_name == 'colbertv2':
+            if self.config.dpr_only is False or self.config.doc_ensemble:
+                colbertv2_index(self.phrases.tolist(), self.config.corpus_name, 'phrase', self.config.colbert_config['phrase_index_name'], overwrite=True)
+                with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.config.colbert_config['root'])):
+                    config = ColBERTConfig(root=self.config.colbert_config['root'], )
                     self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
-            if self.doc_ensemble or dpr_only:
-                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite=True)
-                with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.colbert_config['root'])):
-                    config = ColBERTConfig(root=self.colbert_config['root'], )
-                    self.corpus_searcher = Searcher(index=self.colbert_config['doc_index_name'], config=config, verbose=0)
+            if self.config.doc_ensemble or self.config.dpr_only:
+                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.config.corpus_name, 'corpus', self.config.colbert_config['doc_index_name'], overwrite=True)
+                with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.config.colbert_config['root'])):
+                    config = ColBERTConfig(root=self.config.colbert_config['root'], )
+                    self.corpus_searcher = Searcher(index=self.config.colbert_config['doc_index_name'], config=config, verbose=0)
 
-        self.statistics = {}
-        self.ensembling_debug = []
-        if qa_model is None:
-            qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
-        self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
+
+    def load_queries_cache(self) -> Dict:
+        try:
+            named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.config.corpus_name), sep='\t')
+        except Exception as e:
+            named_entity_cache = pd.DataFrame([], columns=['query', 'triples'])
+
+        if 'query' in named_entity_cache:
+            named_entity_cache = {row['query']: eval(row['triples']) for i, row in
+                                       named_entity_cache.iterrows()}
+        elif 'question' in named_entity_cache:
+            named_entity_cache = {row['question']: eval(row['triples']) for i, row in named_entity_cache.iterrows()}
+        return named_entity_cache
+        
 
     def get_passage_by_idx(self, passage_idx):
         """
@@ -199,13 +203,13 @@ class HippoRAGv3:
         if 'colbertv2' in self.linking_retriever_name:
             # Get Query Doc Scores
             queries = Queries(path=None, data={0: query})
-            if self.doc_ensemble:
+            if self.config.doc_ensemble:
                 query_doc_scores = np.zeros(self.doc_to_phrases_mat.shape[0])
                 ranking = self.corpus_searcher.search_all(queries, k=self.doc_to_phrases_mat.shape[0])
                 # max_query_score = self.get_colbert_max_score(query)
                 for doc_id, rank, score in ranking.data[0]:
                     query_doc_scores[doc_id] = score
-            elif self.dpr_only:
+            elif self.config.dpr_only:
                 query_doc_scores = np.zeros(len(self.dataset_df))
                 ranking = self.corpus_searcher.search_all(queries, k=len(self.dataset_df))
                 for doc_id, rank, score in ranking.data[0]:
@@ -215,7 +219,7 @@ class HippoRAGv3:
                 all_phrase_weights, linking_score_map = self.link_node_by_colbertv2(query_ner_list)
         else:  # dense retrieval model
             # Get Query Doc Scores
-            if self.doc_ensemble or self.dpr_only:
+            if self.config.doc_ensemble or self.config.dpr_only:
                 query_embedding = self.embed_model.encode_text(query, return_cpu=True, return_numpy=True, norm=True)
                 query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T)
                 query_doc_scores = query_doc_scores.T[0]
@@ -224,22 +228,22 @@ class HippoRAGv3:
                 all_phrase_weights, linking_score_map = self.link_node_by_dpr(query_ner_list)
 
         # Run Personalized PageRank (PPR) or other Graph Algorithm Doc Scores
-        if not self.dpr_only:
+        if not self.config.dpr_only:
             if len(query_ner_list) > 0:
                 combined_vector = np.max([all_phrase_weights], axis=0)
 
-                if self.graph_alg == 'ppr':
+                if self.config.graph_alg == 'ppr':
                     ppr_phrase_probs = self.run_pagerank_igraph_chunk([all_phrase_weights])[0]
-                elif self.graph_alg == 'none':
+                elif self.config.graph_alg == 'none':
                     ppr_phrase_probs = combined_vector
-                elif self.graph_alg == 'neighbor_2':
+                elif self.config.graph_alg == 'neighbor_2':
                     ppr_phrase_probs = self.get_neighbors(combined_vector, 2)
-                elif self.graph_alg == 'neighbor_3':
+                elif self.config.graph_alg == 'neighbor_3':
                     ppr_phrase_probs = self.get_neighbors(combined_vector, 3)
-                elif self.graph_alg == 'paths':
+                elif self.config.graph_alg == 'paths':
                     ppr_phrase_probs = self.get_neighbors(combined_vector, 3)
                 else:
-                    assert False, f'Graph Algorithm {self.graph_alg} Not Implemented'
+                    assert False, f'Graph Algorithm {self.config.graph_alg} Not Implemented'
 
                 fact_prob = self.facts_to_phrases_mat.dot(ppr_phrase_probs)
                 ppr_doc_prob = self.docs_to_facts_mat.dot(fact_prob)
@@ -248,7 +252,7 @@ class HippoRAGv3:
                 ppr_doc_prob = np.ones(len(self.extracted_triples)) / len(self.extracted_triples)
 
         # Combine Query-Doc and PPR Scores
-        if self.doc_ensemble or self.dpr_only:
+        if self.config.doc_ensemble or self.config.dpr_only:
             # doc_prob = ppr_doc_prob * 0.5 + min_max_normalize(query_doc_scores) * 0.5
             if len(query_ner_list) == 0:
                 doc_prob = query_doc_scores
@@ -279,7 +283,7 @@ class HippoRAGv3:
         sorted_doc_ids = np.argsort(doc_prob, kind='mergesort')[::-1]
         sorted_scores = doc_prob[sorted_doc_ids]
 
-        if not (self.dpr_only) and len(query_ner_list) > 0:
+        if not (self.config.dpr_only) and len(query_ner_list) > 0:
             # logs
             phrase_one_hop_triples = []
             for phrase_id in np.where(all_phrase_weights > 0)[0]:
@@ -309,7 +313,7 @@ class HippoRAGv3:
         return sorted_doc_ids.tolist()[:top_k], sorted_scores.tolist()[:top_k], logs
 
     def query_ner(self, query):
-        if self.dpr_only:
+        if self.config.dpr_only:
             query_ner_list = []
         else:
             # Extract Entities
