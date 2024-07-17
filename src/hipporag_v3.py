@@ -19,20 +19,19 @@ from src.langchain_util import init_langchain_model, LangChainModel
 from src.lm_wrapper.util import init_embedding_model
 from src.named_entity_extraction_parallel import named_entity_recognition
 from src.processing import processing_phrases, min_max_normalize
-from src.lm_wrapper.gritlm import GritWrapper
+
 os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
 
-class HippoRAGv3:
+class HippoRAG:
 
     def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-3.5-turbo-1106',
                  graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts_and_sim', sim_threshold=0.8, node_specificity=True,
                  doc_ensemble=False,
                  colbert_config=None, dpr_only=False, graph_alg='ppr', damping=0.1, recognition_threshold=0.9, corpus_path=None,
-                 linking_retriever_name=None,
-                 *args, **kwargs):
+                 qa_model: LangChainModel = None, linking_retriever_name=None):
         """
         @param corpus_name: Name of the dataset to use for retrieval
         @param extraction_model: LLM provider for query NER, e.g., 'openai' or 'together'
@@ -55,6 +54,7 @@ class HippoRAGv3:
         self.corpus_name = corpus_name
         self.extraction_model_name = extraction_model_name
         self.extraction_model_name_processed = extraction_model_name.replace('/', '_')
+        self.client = init_langchain_model(extraction_model, extraction_model_name)
         assert graph_creating_retriever_name
         if linking_retriever_name is None:
             linking_retriever_name = graph_creating_retriever_name
@@ -116,18 +116,21 @@ class HippoRAGv3:
 
         if self.linking_retriever_name == 'colbertv2':
             if self.dpr_only is False or self.doc_ensemble:
-                colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite='reuse')
+                colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite=True)
                 with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.colbert_config['root'])):
                     config = ColBERTConfig(root=self.colbert_config['root'], )
                     self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
             if self.doc_ensemble or dpr_only:
-                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite='reuse')
+                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite=True)
                 with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.colbert_config['root'])):
                     config = ColBERTConfig(root=self.colbert_config['root'], )
                     self.corpus_searcher = Searcher(index=self.colbert_config['doc_index_name'], config=config, verbose=0)
 
         self.statistics = {}
         self.ensembling_debug = []
+        if qa_model is None:
+            qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
+        self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
 
     def get_passage_by_idx(self, passage_idx):
         """
@@ -295,8 +298,17 @@ class HippoRAGv3:
             query_ner_list = []
         else:
             # Extract Entities
-            assert query in self.named_entity_cache
-            query_ner_list = self.named_entity_cache[query]['named_entities']
+            try:
+                if query in self.named_entity_cache:
+                    query_ner_list = self.named_entity_cache[query]['named_entities']
+                else:
+                    query_ner_json, total_tokens = named_entity_recognition(self.client, query)
+                    query_ner_list = eval(query_ner_json)['named_entities']
+
+                query_ner_list = [processing_phrases(p) for p in query_ner_list]
+            except:
+                self.logger.error('Error in Query NER')
+                query_ner_list = []
         return query_ner_list
 
     def get_neighbors(self, prob_vector, max_depth=1):
@@ -505,7 +517,7 @@ class HippoRAGv3:
             self.logger.info(f'Loaded doc embeddings from {cache_filename}, shape: {self.doc_embedding_mat.shape}')
         else:
             self.doc_embeddings = []
-            self.doc_embedding_mat = self.embed_model.encode_text(self.dataset_df['paragraph'].tolist(), return_cpu=True, return_numpy=True, norm=True, batch_size=16)
+            self.doc_embedding_mat = self.embed_model.encode_text(self.dataset_df['paragraph'].tolist(), return_cpu=True, return_numpy=True, norm=True)
             pickle.dump(self.doc_embedding_mat, open(cache_filename, 'wb'))
             self.logger.info(f'Saved doc embeddings to {cache_filename}, shape: {self.doc_embedding_mat.shape}')
 
@@ -517,7 +529,7 @@ class HippoRAGv3:
         """
         pageranked_probabilities = []
 
-        for reset_prob in reset_prob_chunk:
+        for reset_prob in tqdm(reset_prob_chunk, desc='pagerank chunk'):
             pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.damping, directed=False,
                                                             weights='weight', reset=reset_prob, implementation='prpack')
 
@@ -587,12 +599,7 @@ class HippoRAGv3:
         :param query_ner_list:
         :return:
         """
-        if isinstance(self.embed_model, GritWrapper):
-            instruction = "Given an entity, retrieve the relevant entities"
-            query_instruction = "<|user|>\n" + instruction + "\n<|embed|>\n" 
-            query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True, instruction=query_instruction)
-        else:
-            query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
+        query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
 
         # Get Closest Entity Nodes
         prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
