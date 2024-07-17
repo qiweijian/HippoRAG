@@ -85,12 +85,16 @@ class HipporagConfig:
         self.extraction_model_name_processed = self.extraction_model_name.replace('/', '_')
         if self.linking_retriever_name is None:
             self.linking_retriever_name = self.graph_creating_retriever_name
+
+        if self.extraction_model_name != 'gpt-3.5-turbo-1106':
+            self.extraction_type = self.extraction_type + '_' + self.extraction_model_name_processed
         self.graph_creating_retriever_name_processed = self.graph_creating_retriever_name.replace('/', '_').replace('.', '')
         self.linking_retriever_name_processed = self.linking_retriever_name.replace('/', '_').replace('.', '')
-        self.version = 'v3.3'
+        self.version = 'v3'
 
         self.path_dict = {
             'named_entity_cache': 'output/{}_queries.named_entity_output.tsv'.format(self.corpus_name),
+            'data_path': f'data/{self.corpus_name}.json',
             'corpus_path': 'data/{}_corpus.json'.format(self.corpus_name),
             'index_file_pattern': 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed),
             'kb_node_phrase_to_id':'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
@@ -105,15 +109,27 @@ class HipporagConfig:
             'graph_file': 'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, str(self.sim_threshold), self.phrase_type, self.extraction_type, self.graph_creating_retriever_name_processed, self.version),
             'encoded_string': 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed),
             'kb_node_phrase_embeddings': 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name),
-            'doc_embeddings_cache': 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+            'doc_embeddings_cache': 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name),
+            'prompt_path': self.prompt_path()
         }
+    
+    def prompt_path(self):
+        if 'hotpotqa' in self.corpus_name:
+            prompt_path = 'data/ircot_prompts/hotpotqa/gold_with_3_distractors_context_cot_qa_codex.txt'
+        elif 'musique' in self.corpus_name:
+            prompt_path = 'data/ircot_prompts/musique/gold_with_3_distractors_context_cot_qa_codex.txt'
+        elif '2wikimultihopqa' in self.corpus_name:
+            prompt_path = 'data/ircot_prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt'
+        else:
+            prompt_path = f'data/ircot_prompts/{self.corpus_name}/gold_with_3_distractors_context_cot_qa_codex.txt'
+        return prompt_path
 
     def get_path(self, key):
         return self.path_dict.get(key, None)
         
 
 class HippoRAGv3:
-    def __init__(self, config:HipporagConfig):
+    def __init__(self, config:HipporagConfig, qa_model=None):
         self.config = config
         self.client = init_langchain_model(self.config.extraction_model, self.config.extraction_model_name)
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -149,12 +165,12 @@ class HippoRAGv3:
 
         if self.config.linking_retriever_name == 'colbertv2':
             if self.config.dpr_only is False or self.config.doc_ensemble:
-                colbertv2_index(self.phrases.tolist(), self.config.corpus_name, 'phrase', self.config.colbert_config['phrase_index_name'], overwrite=True)
+                colbertv2_index(self.phrases.tolist(), self.config.corpus_name, 'phrase', self.config.colbert_config['phrase_index_name'], overwrite='reuse')
                 with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.config.colbert_config['root'])):
                     config = ColBERTConfig(root=self.config.colbert_config['root'], )
-                    self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
+                    self.phrase_searcher = Searcher(index=self.config.colbert_config['phrase_index_name'], config=config, verbose=0)
             if self.config.doc_ensemble or self.config.dpr_only:
-                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.config.corpus_name, 'corpus', self.config.colbert_config['doc_index_name'], overwrite=True)
+                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.config.corpus_name, 'corpus', self.config.colbert_config['doc_index_name'], overwrite='reuse')
                 with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.config.colbert_config['root'])):
                     config = ColBERTConfig(root=self.config.colbert_config['root'], )
                     self.corpus_searcher = Searcher(index=self.config.colbert_config['doc_index_name'], config=config, verbose=0)
@@ -223,7 +239,7 @@ class HippoRAGv3:
         assert isinstance(query, str), 'Query must be a string'
         query_ner_list = self.query_ner(query)
 
-        if 'colbertv2' in self.linking_retriever_name:
+        if 'colbertv2' in self.config.linking_retriever_name:
             # Get Query Doc Scores
             queries = Queries(path=None, data={0: query})
             if self.config.doc_ensemble:
@@ -280,7 +296,7 @@ class HippoRAGv3:
             if len(query_ner_list) == 0:
                 doc_prob = query_doc_scores
                 self.statistics['doc'] = self.statistics.get('doc', 0) + 1
-            elif np.min(list(linking_score_map.values())) > self.recognition_threshold:  # high confidence in named entities
+            elif np.min(list(linking_score_map.values())) > self.config.recognition_threshold:  # high confidence in named entities
                 doc_prob = ppr_doc_prob
                 self.statistics['ppr'] = self.statistics.get('ppr', 0) + 1
             else:  # relatively low confidence in named entities, combine the two scores
@@ -399,20 +415,20 @@ class HippoRAGv3:
 
         self.extracted_triples = extracted_file['docs']
 
-        if self.corpus_name == 'hotpotqa':
+        if self.config.corpus_name == 'hotpotqa':
             self.dataset_df = pd.DataFrame([p['passage'].split('\n')[0] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
-        if self.corpus_name == 'hotpotqa_train':
+        if self.config.corpus_name == 'hotpotqa_train':
             self.dataset_df = pd.DataFrame([p['passage'].split('\n')[0] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
-        elif 'musique' in self.corpus_name:
+        elif 'musique' in self.config.corpus_name:
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
-        elif self.corpus_name == '2wikimultihopqa':
+        elif self.config.corpus_name == '2wikimultihopqa':
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
             self.dataset_df['title'] = [s['title'] for s in self.extracted_triples]
-        elif 'case_study' in self.corpus_name:
+        elif 'case_study' in self.config.corpus_name:
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
         else:
@@ -421,8 +437,7 @@ class HippoRAGv3:
 
     def load_index_files(self):
         self.load_openie()
-        if self.extraction_model_name != 'gpt-3.5-turbo-1106':
-            self.extraction_type = self.extraction_type + '_' + self.extraction_model_name_processed
+        
         self.kb_node_phrase_to_id = pickle.load(open(self.config.get_path('kb_node_phrase_to_id'), 'rb'))
         self.lose_fact_dict = pickle.load(open(self.config.get_path('lose_fact_dict'), 'rb'))
 
@@ -492,7 +507,7 @@ class HippoRAGv3:
         if os.path.isfile(encoded_string_path):
             self.load_node_vectors_from_string_encoding_cache(encoded_string_path)
         else:  # use another way to load node vectors
-            if self.linking_retriever_name == 'colbertv2':
+            if self.config.linking_retriever_name == 'colbertv2':
                 return
             kb_node_phrase_embeddings_path = self.config.get_path('kb_node_phrase_embeddings')
             if os.path.isfile(kb_node_phrase_embeddings_path):
@@ -551,8 +566,8 @@ class HippoRAGv3:
         """
         pageranked_probabilities = []
 
-        for reset_prob in tqdm(reset_prob_chunk, desc='pagerank chunk'):
-            pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.damping, directed=False,
+        for reset_prob in reset_prob_chunk:
+            pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.config.damping, directed=False,
                                                             weights='weight', reset=reset_prob, implementation='prpack')
 
             pageranked_probabilities.append(np.array(pageranked_probs))
@@ -604,7 +619,7 @@ class HippoRAGv3:
         top_phrase_vec = np.zeros(len(self.phrases))
 
         for phrase_id in phrase_ids:
-            if self.node_specificity:
+            if self.config.node_specificity:
                 if self.phrase_to_num_doc[phrase_id] == 0:
                     weight = 1
                 else:
