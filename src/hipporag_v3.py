@@ -25,13 +25,14 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
 
-class HippoRAG:
+class HippoRAGv3:
 
     def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-3.5-turbo-1106',
                  graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts_and_sim', sim_threshold=0.8, node_specificity=True,
                  doc_ensemble=False,
                  colbert_config=None, dpr_only=False, graph_alg='ppr', damping=0.1, recognition_threshold=0.9, corpus_path=None,
-                 qa_model: LangChainModel = None, linking_retriever_name=None):
+                 linking_retriever_name=None,
+                 *args, **kwargs):
         """
         @param corpus_name: Name of the dataset to use for retrieval
         @param extraction_model: LLM provider for query NER, e.g., 'openai' or 'together'
@@ -54,7 +55,6 @@ class HippoRAG:
         self.corpus_name = corpus_name
         self.extraction_model_name = extraction_model_name
         self.extraction_model_name_processed = extraction_model_name.replace('/', '_')
-        self.client = init_langchain_model(extraction_model, extraction_model_name)
         assert graph_creating_retriever_name
         if linking_retriever_name is None:
             linking_retriever_name = graph_creating_retriever_name
@@ -128,9 +128,6 @@ class HippoRAG:
 
         self.statistics = {}
         self.ensembling_debug = []
-        if qa_model is None:
-            qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
-        self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
 
     def get_passage_by_idx(self, passage_idx):
         """
@@ -298,17 +295,8 @@ class HippoRAG:
             query_ner_list = []
         else:
             # Extract Entities
-            try:
-                if query in self.named_entity_cache:
-                    query_ner_list = self.named_entity_cache[query]['named_entities']
-                else:
-                    query_ner_json, total_tokens = named_entity_recognition(self.client, query)
-                    query_ner_list = eval(query_ner_json)['named_entities']
-
-                query_ner_list = [processing_phrases(p) for p in query_ner_list]
-            except:
-                self.logger.error('Error in Query NER')
-                query_ner_list = []
+            assert query in self.named_entity_cache
+            query_ner_list = self.named_entity_cache[query]['named_entities']
         return query_ner_list
 
     def get_neighbors(self, prob_vector, max_depth=1):
