@@ -14,6 +14,9 @@ from colbert import Searcher
 from colbert.data import Queries
 from colbert.infra import RunConfig, Run, ColBERTConfig
 from tqdm import tqdm
+import copy
+import re
+from dataclasses import dataclass
 
 from src.colbertv2_indexing import colbertv2_index
 from src.langchain_util import init_langchain_model, LangChainModel
@@ -26,7 +29,7 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
 from dataclasses import dataclass, field
-from typing import Optional, Literal, Dict
+from typing import Optional, Literal, Dict, Union
 
 @dataclass
 class HipporagConfig:
@@ -98,6 +101,7 @@ class HipporagConfig:
             'data_path': f'data/{self.corpus_name}.json',
             'corpus_path': 'data/{}_corpus.json'.format(self.corpus_name),
             'index_file_pattern': 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed),
+            'relation_to_id':'output/{}_{}_relation_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
             'kb_node_phrase_to_id':'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
             'lose_fact_dict': 'output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type, self.extraction_type, self.version),
             'relations_dict': 'output/{}_{}_graph_relation_dict_{}_{}_{}.{}.subset.p'.format(
@@ -128,6 +132,49 @@ class HipporagConfig:
     def get_path(self, key):
         return self.path_dict.get(key, None)
         
+@dataclass
+class Entity:
+    name: str
+    id: int
+    in_relations: Dict = None
+    out_relations: Dict = None
+
+    def __post_init__(self):
+        if self.in_relations is None:
+            self.in_relations = defaultdict(list)
+        if self.out_relations is None:
+            self.out_relations = defaultdict(list)
+
+    def __repr__(self):
+        return (f"Entity(name={self.name}, id={self.id}, "
+                f"{len(self.in_relations)} in_relations, "
+                f"{len(self.out_relations)} out_relations")
+
+class KnowledgeBase:
+    def __init__(self, kb_phrase_dict: Dict[str, int]):
+        self.entities = {id: Entity(name=name, id=id) for name, id in kb_phrase_dict.items()}
+        self.name_to_id = kb_phrase_dict
+    
+    def get(self, identifier: Union[str, int]) -> Optional[Entity]:
+        if isinstance(identifier, int):
+            return self.entities.get(identifier, None)
+        elif isinstance(identifier, str):
+            entity_id = self.name_to_id.get(identifier, None)
+            if entity_id is not None:
+                return self.entities.get(entity_id, None)
+        return None
+    
+    def add_triplet(self, head_id: int, relation_name: str, tail_id: int):
+        entity1 = self.entities.get(head_id)
+        entity2 = self.entities.get(tail_id)
+        
+        if entity1 is not None and entity2 is not None:
+            entity1.out_relations[relation_name].append(entity2)
+            entity2.in_relations[relation_name].append(entity1)
+        else:
+            raise ValueError("One or both of the entity IDs do not exist.")
+
+        
 
 class HippoRAGv3:
     def __init__(self, config:HipporagConfig, qa_model=None):
@@ -153,7 +200,7 @@ class HippoRAGv3:
             self.load_index_files()
 
             # Construct Graph
-            self.build_graph()
+            self.create_graph()
 
             # Loading Node Embeddings
             self.load_node_vectors()
@@ -440,6 +487,8 @@ class HippoRAGv3:
         self.load_openie()
         
         self.kb_node_phrase_to_id = pickle.load(open(self.config.get_path('kb_node_phrase_to_id'), 'rb'))
+        self.relation_to_id = pickle.load(open(self.config.get_path('relation_to_id'), 'rb'))
+
         self.lose_fact_dict = pickle.load(open(self.config.get_path('lose_fact_dict'), 'rb'))
 
         try:
@@ -450,6 +499,8 @@ class HippoRAGv3:
         self.lose_facts = list(self.lose_fact_dict.keys())
         self.lose_facts = [self.lose_facts[i] for i in np.argsort(list(self.lose_fact_dict.values()))]
         self.phrases = np.array(list(self.kb_node_phrase_to_id.keys()))[np.argsort(list(self.kb_node_phrase_to_id.values()))]
+        self.relations = np.array(list(self.relation_to_id.keys()))[np.argsort(list(self.relation_to_id.values()))]
+
 
         self.docs_to_facts = pickle.load(open(self.config.get_path('docs_to_facts'), 'rb'))
         self.facts_to_phrases = pickle.load(open(self.config.get_path('facts_to_phrases'), 'rb'))
@@ -460,11 +511,16 @@ class HippoRAGv3:
         self.doc_to_phrases_mat[self.doc_to_phrases_mat.nonzero()] = 1
         self.phrase_to_num_doc = self.doc_to_phrases_mat.sum(0).T
 
-        graph_file_path = self.config.get_path('graph_file')
-        if os.path.isfile(graph_file_path):
-            self.graph_plus = pickle.load(open(graph_file_path, 'rb'))  # (phrase1 id, phrase2 id) -> the number of occurrences
-        else:
-            self.logger.exception('Graph file not found: ' + graph_file_path)
+
+        self.doc_to_relation_mat = self.doc_to_relation_mat.dot(self.facts_to_phrases_mat)
+        self.doc_to_relation_mat[self.doc_to_relation_mat.nonzero()] = 1
+        self.relation_to_num_doc = self.doc_to_relation_mat.sum(0).T
+
+        # graph_file_path = self.config.get_path('graph_file')
+        # if os.path.isfile(graph_file_path):
+        #     self.graph_plus = pickle.load(open(graph_file_path, 'rb'))  # (phrase1 id, phrase2 id) -> the number of occurrences
+        # else:
+        #     self.logger.exception('Graph file not found: ' + graph_file_path)
 
     def get_phrases_in_doc_str(self, doc: str):
         # find doc id from self.dataset_df
@@ -474,39 +530,169 @@ class HippoRAGv3:
             return [self.phrases[phrase_id] for phrase_id in phrase_ids]
         except:
             return []
+        
+    def create_graph(self):
+        inter_triple_weight = 1.0
+        similarity_max = 1.0
+        # read lose fact dict from file
+        # lose_fact_dict = pickle.load(open(self.config.get_path('lose_fact_dict'), 'rb'))
+        # docs_to_facts = pickle.load(open(self.config.get_path('docs_to_facts'), 'rb'))
+        self.kb_phrase_dict = pickle.load(open(self.config.get_path('kb_node_phrase_to_id'), 'rb'))
+        # facts_to_phrases = pickle.load(open(self.config.get_path('facts_to_phrases'), 'rb'))
 
-    def build_graph(self):
+        graph, graph_json = {}, {}
+        self.kb = KnowledgeBase(self.kb_phrase_dict)
+
+        for triple, fact_id in self.lose_fact_dict.items():
+
+            if len(triple) == 3:
+                relation = triple[1]
+                triple = np.array(triple)[[0, 2]]
+
+                # docs_to_facts[(doc_id, fact_id)] = 1
+
+                for i, phrase in enumerate(triple):
+                    phrase_id = self.kb_phrase_dict[phrase]
+                    # doc_phrases.append(phrase_id)
+
+                    # facts_to_phrases[(fact_id, phrase_id)] = 1
+
+                    for phrase2 in triple[i + 1:]:
+                        
+                        phrase2_id = self.kb_phrase_dict[phrase2]
+
+                        self.kb.add_triplet(phrase_id, relation, phrase2_id)
+
+                        fact_edge_r = (phrase_id, phrase2_id)
+                        fact_edge_l = (phrase2_id, phrase_id)
+
+                        # fact_edges.append(fact_edge_r)
+                        # fact_edges.append(fact_edge_l)
+
+                        graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
+                        graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
+
+                        phrase_edges = graph_json.get(phrase, {})
+                        edge = phrase_edges.get(phrase2, ('triple', 0))
+                        phrase_edges[phrase2] = ('triple', edge[1] + 1)
+                        graph_json[phrase] = phrase_edges
+
+                        phrase_edges = graph_json.get(phrase2, {})
+                        edge = phrase_edges.get(phrase, ('triple', 0))
+                        phrase_edges[phrase] = ('triple', edge[1] + 1)
+                        graph_json[phrase2] = phrase_edges
+
+                        # num_triple_edges += 1
+
+        if 'colbert' in self.config.graph_creating_retriever_name_processed:
+            kb_similarity = pickle.load(open('data/lm_vectors/colbert/nearest_neighbor_kb_to_kb.p'.format(self.config.graph_creating_retriever_name_processed), 'rb'))
+        else:
+            kb_similarity = pickle.load(open('data/lm_vectors/{}_mean/nearest_neighbor_kb_to_kb.p'.format(self.config.graph_creating_retriever_name_processed), 'rb'))
+
+        print('Augmenting Graph from Similarity')
+
+        graph_plus = copy.deepcopy(graph)
+
+        kb_similarity = {processing_phrases(k): v for k, v in kb_similarity.items()}
+        self.similar_entities_dict = defaultdict(set)
+        # synonym_candidates = []
+
+        for phrase in tqdm(kb_similarity.keys(), total=len(kb_similarity)):
+
+            synonyms = []
+
+            if len(re.sub('[^A-Za-z0-9]', '', phrase)) > 2:
+                phrase_id = self.kb_phrase_dict.get(phrase, None)
+
+                if phrase_id is not None:
+
+                    nns = kb_similarity[phrase]
+
+                    num_nns = 0
+                    for nn, score in zip(nns[0], nns[1]):
+                        nn = processing_phrases(nn)
+                        if score < self.config.sim_threshold or num_nns > 100:
+                            break
+
+                        if nn != phrase:
+
+                            phrase2_id = self.kb_phrase_dict.get(nn)
+
+                            if phrase2_id is not None:
+                                phrase2 = nn
+
+                                sim_edge = (phrase_id, phrase2_id)
+                                synonyms.append((nn, score))
+
+                                self.similar_entities_dict[phrase_id].add(phrase2_id)
+                                graph_plus[sim_edge] = similarity_max * score
+
+                                num_nns += 1
+
+                                phrase_edges = graph_json.get(phrase, {})
+                                edge = phrase_edges.get(phrase2, ('similarity', 0))
+                                if edge[0] == 'similarity':
+                                    phrase_edges[phrase2] = ('similarity', edge[1] + score)
+                                    graph_json[phrase] = phrase_edges
 
         edges = set()
-
         new_graph_plus = {}
         self.kg_adj_list = defaultdict(dict)
         self.kg_inverse_adj_list = defaultdict(dict)
-
-        for edge, weight in tqdm(self.graph_plus.items(), total=len(self.graph_plus), desc='Building Graph'):
+        for edge, weight in tqdm(graph_plus.items(), total=len(graph_plus), desc='Building Graph'):
             edge1 = edge[0]
             edge2 = edge[1]
 
             if (edge1, edge2) not in edges and edge1 != edge2:
-                new_graph_plus[(edge1, edge2)] = self.graph_plus[(edge[0], edge[1])]
+                new_graph_plus[(edge1, edge2)] = graph_plus[(edge[0], edge[1])]
                 edges.add((edge1, edge2))
-                self.kg_adj_list[edge1][edge2] = self.graph_plus[(edge[0], edge[1])]
-                self.kg_inverse_adj_list[edge2][edge1] = self.graph_plus[(edge[0], edge[1])]
+                self.kg_adj_list[edge1][edge2] = graph_plus[(edge[0], edge[1])]
+                self.kg_inverse_adj_list[edge2][edge1] = graph_plus[(edge[0], edge[1])]
 
-        self.graph_plus = new_graph_plus
+        # self.graph_plus = new_graph_plus
+        self.g = nx.Graph()
+        n_vertices = len(self.kb_node_phrase_to_id)
+        self.g.add_nodes_from(range(n_vertices))
 
         edges = list(edges)
-
-        n_vertices = len(self.kb_node_phrase_to_id)
-        # self.g = ig.Graph(n_vertices, edges)
-
-        # self.g.es['weight'] = [self.graph_plus[(v1, v3)] for v1, v3 in edges]
-        self.g = nx.Graph()
-        self.g.add_nodes_from(range(n_vertices))
         self.g.add_edges_from(edges)
-        weights = {(v1, v3): self.graph_plus[(v1, v3)] for v1, v3 in edges}
+        weights = {(v1, v3): new_graph_plus[(v1, v3)] for v1, v3 in edges}
         nx.set_edge_attributes(self.g, weights, 'weight')
         self.logger.info(f'Graph built: num vertices: {n_vertices}, num_edges: {len(edges)}')
+        
+
+    # def build_graph(self):
+
+    #     edges = set()
+
+    #     new_graph_plus = {}
+    #     self.kg_adj_list = defaultdict(dict)
+    #     self.kg_inverse_adj_list = defaultdict(dict)
+
+    #     for edge, weight in tqdm(self.graph_plus.items(), total=len(self.graph_plus), desc='Building Graph'):
+    #         edge1 = edge[0]
+    #         edge2 = edge[1]
+
+    #         if (edge1, edge2) not in edges and edge1 != edge2:
+    #             new_graph_plus[(edge1, edge2)] = self.graph_plus[(edge[0], edge[1])]
+    #             edges.add((edge1, edge2))
+    #             self.kg_adj_list[edge1][edge2] = self.graph_plus[(edge[0], edge[1])]
+    #             self.kg_inverse_adj_list[edge2][edge1] = self.graph_plus[(edge[0], edge[1])]
+
+    #     self.graph_plus = new_graph_plus
+
+    #     edges = list(edges)
+
+    #     n_vertices = len(self.kb_node_phrase_to_id)
+    #     # self.g = ig.Graph(n_vertices, edges)
+
+    #     # self.g.es['weight'] = [self.graph_plus[(v1, v3)] for v1, v3 in edges]
+    #     self.g = nx.Graph()
+    #     self.g.add_nodes_from(range(n_vertices))
+    #     self.g.add_edges_from(edges)
+    #     weights = {(v1, v3): self.graph_plus[(v1, v3)] for v1, v3 in edges}
+    #     nx.set_edge_attributes(self.g, weights, 'weight')
+    #     self.logger.info(f'Graph built: num vertices: {n_vertices}, num_edges: {len(edges)}')
 
     def load_node_vectors(self):
         encoded_string_path = self.config.get_path('encoded_string')
@@ -583,20 +769,23 @@ class HippoRAGv3:
 
         return np.array(pageranked_probabilities)
 
-    def get_colbert_max_score(self, query):
+    def get_colbert_max_score(self, query, searcher=None):
+        if searcher is None:
+            searcher = self.phrase_searcher
         queries_ = [query]
-        encoded_query = self.phrase_searcher.encode(queries_, full_length_search=False)
-        encoded_doc = self.phrase_searcher.checkpoint.docFromText(queries_).float()
+        encoded_query = searcher.encode(queries_, full_length_search=False)
+        encoded_doc = searcher.checkpoint.docFromText(queries_).float()
         max_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
-
         return max_score
 
-    def get_colbert_real_score(self, query, doc):
+    def get_colbert_real_score(self, query, doc, searcher=None):
+        if searcher is None:
+            searcher = self.phrase_searcher
         queries_ = [query]
-        encoded_query = self.phrase_searcher.encode(queries_, full_length_search=False)
+        encoded_query = searcher.encode(queries_, full_length_search=False)
 
         docs_ = [doc]
-        encoded_doc = self.phrase_searcher.checkpoint.docFromText(docs_).float()
+        encoded_doc = searcher.checkpoint.docFromText(docs_).float()
 
         real_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
 
@@ -676,3 +865,78 @@ class HippoRAGv3:
         linking_score_map = {(query_phrase, self.phrases[linked_phrase_id]): max_score
                              for linked_phrase_id, max_score, query_phrase in zip(linked_phrase_ids, max_scores, query_ner_list)}
         return all_phrase_weights, linking_score_map
+    
+    def link_relation_by_colbertv2(self, query_ner_list):
+        relation_ids = []
+        max_scores = []
+
+        for query in query_ner_list:
+            queries = Queries(path=None, data={0: query})
+
+            queries_ = [query]
+            encoded_query = self.relation_searcher.encode(queries_, full_length_search=False)
+
+            max_score = self.get_colbert_max_score(query, searcher=self.relation_searcher)
+
+            ranking = self.relation_searcher.search_all(queries, k=1)
+            for relation_id, rank, score in ranking.data[0]:
+                relation = self.relations[relation_id]
+                relations_ = [relation]
+                encoded_doc = self.relation_searcher.checkpoint.docFromText(relations_).float()
+                real_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
+
+                relation_ids.append(relation_id)
+                max_scores.append(real_score / max_score)
+
+        # create a vector (num_doc) with 1s at the indices of the retrieved documents and 0s elsewhere
+        top_relation_vec = np.zeros(len(self.relations))
+
+        for relation_id in relation_ids:
+            if self.config.node_specificity:
+                if self.relation_to_num_doc[relation_id] == 0:
+                    weight = 1
+                else:
+                    weight = 1 / self.relation_to_num_doc[relation_id]
+                top_relation_vec[relation_id] = weight
+            else:
+                top_relation_vec[relation_id] = 1.0
+
+        return top_relation_vec, {(query, self.relations[relation_id]): max_score for relation_id, max_score, query in zip(relation_ids, max_scores, query_ner_list)}
+
+    def link_relation_by_dpr(self, query_ner_list: list):
+        """
+        Get the most similar phrases (as vector) in the KG given the named entities
+        :param query_ner_list:
+        :return:
+        """
+        query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
+
+        # Get Closest Entity Nodes
+        prob_vectors = np.dot(query_ner_embeddings, self.kb_relation_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
+
+        linked_relation_ids = []
+        max_scores = []
+
+        for prob_vector in prob_vectors:
+            relation_id = np.argmax(prob_vector)  # the phrase with the highest similarity
+            linked_relation_ids.append(relation_id)
+            max_scores.append(prob_vector[relation_id])
+
+        # create a vector (num_phrase) with 1s at the indices of the linked phrases and 0s elsewhere
+        # if node_specificity is True, it's not one-hot but a weight
+        all_relation_weights = np.zeros(len(self.relations))
+
+        for relation_id in linked_relation_ids:
+            if self.config.node_specificity:
+                if self.relation_to_num_doc[relation_id] == 0:  # just in case the phrase is not recorded in any documents
+                    weight = 1
+                else:  # the more frequent the phrase, the less weight it gets
+                    weight = 1 / self.relation_to_num_doc[relation_id]
+
+                all_relation_weights[relation_id] = weight
+            else:
+                all_relation_weights[relation_id] = 1.0
+
+        linking_score_map = {(query_relation, self.phrases[linked_relation_id]): max_score
+                             for linked_relation_id, max_score, query_relation in zip(linked_relation_ids, max_scores, query_ner_list)}
+        return all_relation_weights, linking_score_map

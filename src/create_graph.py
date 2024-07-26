@@ -160,6 +160,8 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
         kb_phrase_df = pd.DataFrame(unique_phrases)
         kb_phrase_dict = {p: i for i, p in enumerate(unique_phrases)}
 
+        kb_relation_dict = {r: i for i, r in enumerate(unique_relations)}
+
         lose_facts = []
 
         for triples in triple_tuples:
@@ -173,12 +175,15 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
         json.dump(fact_json, open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
 
         pickle.dump(kb_phrase_dict, open('output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
+        pickle.dump(kb_relation_dict, open('output/{}_{}_relation_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
+
         pickle.dump(lose_fact_dict, open('output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
         graph_json = {}
 
         docs_to_facts = {}  # (Num Docs, Num Facts)
         facts_to_phrases = {}  # (Num Facts, Num Phrases)
+        facts_to_relations = {}
         graph = {}  # (Num Phrases, Num Phrases)
 
         num_triple_edges = 0
@@ -198,6 +203,7 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
                 if len(triple) == 3:
                     relation = triple[1]
+                    relation_id = kb_relation_dict[relation]
                     triple = np.array(triple)[[0, 2]]
 
                     docs_to_facts[(doc_id, fact_id)] = 1
@@ -207,6 +213,8 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
                         doc_phrases.append(phrase_id)
 
                         facts_to_phrases[(fact_id, phrase_id)] = 1
+                        facts_to_relations[(fact_id, relation_id)] = 1
+
 
                         for phrase2 in triple[i + 1:]:
                             phrase2_id = kb_phrase_dict[phrase2]
@@ -234,16 +242,20 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
         pickle.dump(docs_to_facts, open('output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(facts_to_phrases, open('output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
+        pickle.dump(facts_to_relations, open('output/{}_{}_graph_facts_to_relations_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
         docs_to_facts_mat = csr_array(([int(v) for v in docs_to_facts.values()], ([int(e[0]) for e in docs_to_facts.keys()], [int(e[1]) for e in docs_to_facts.keys()])),
                                       shape=(len(triple_tuples), len(lose_facts)))
         facts_to_phrases_mat = csr_array(([int(v) for v in facts_to_phrases.values()], ([e[0] for e in facts_to_phrases.keys()], [e[1] for e in facts_to_phrases.keys()])),
                                          shape=(len(lose_facts), len(unique_phrases)))
+        facts_to_relations_mat = csr_array(([int(v) for v in facts_to_relations.values()], ([e[0] for e in facts_to_relations.keys()], [e[1] for e in facts_to_relations.keys()])),
+                                         shape=(len(lose_facts), len(unique_relations)))
 
         pickle.dump(docs_to_facts_mat, open('output/{}_{}_graph_doc_to_facts_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(facts_to_phrases_mat,
                     open('output/{}_{}_graph_facts_to_phrases_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-
+        pickle.dump(facts_to_relations_mat,
+                    open('output/{}_{}_graph_facts_to_relations_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(graph, open('output/{}_{}_graph_fact_doc_edges_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
         print('Loading Vectors')

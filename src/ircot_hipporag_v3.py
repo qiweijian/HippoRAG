@@ -1,4 +1,5 @@
 import sys
+import os
 
 sys.path.append('.')
 
@@ -15,6 +16,13 @@ import json
 from tqdm import tqdm
 
 from hipporag_v3 import HippoRAGv3, HipporagConfig
+
+# import debugpy
+
+# # 绑定到 localhost 5679 端口
+# debugpy.listen(("localhost", 5679))
+# print("Waiting for debugger attach...")
+# debugpy.wait_for_client()
 
 ircot_reason_instruction = 'You serve as an intelligent assistant, adept at facilitating users through complex, multi-hop reasoning across multiple documents. This task is illustrated through demonstrations, each consisting of a document set paired with a relevant question and its multi-hop reasoning thoughts. Your task is to generate one thought for current step, DON\'T generate the whole thoughts at once! If you reach what you believe to be the final step, start with "So the answer is:".'
 
@@ -170,7 +178,7 @@ if __name__ == '__main__':
     k_list = [1, 2, 5, 10, 15, 20, 30, 40, 50, 80, 100]
     total_recall = {k: 0 for k in k_list}
 
-
+    os.makedirs(os.path.dirname(ircot_config.output_path), exist_ok=True)
     if ircot_config.force_retry:
         results = []
         processed_ids = set()
@@ -259,13 +267,13 @@ if __name__ == '__main__':
 
         # calculate metrics
         recall = dict()
-        print(f'idx: {sample_idx + 1} ', end='')
+        # print(f'idx: {sample_idx + 1} ', end='')
         for k in k_list:
             recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
             total_recall[k] += recall[k]
-            print(f'R@{k}: {total_recall[k] / (sample_idx + 1):.4f} ', end='')
-        print()
-        print('[ITERATION]', it, '[PASSAGE]', len(retrieved_passages), '[THOUGHT]', thoughts)
+        #     print(f'R@{k}: {total_recall[k] / (sample_idx + 1):.4f} ', end='')
+        # print()
+        # print('[ITERATION]', it, '[PASSAGE]', len(retrieved_passages), '[THOUGHT]', thoughts)
 
         # record results
         phrases_in_gold_docs = []
