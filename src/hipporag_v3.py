@@ -6,6 +6,7 @@ from collections import defaultdict
 from glob import glob
 
 import igraph as ig
+import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
@@ -497,9 +498,14 @@ class HippoRAGv3:
         edges = list(edges)
 
         n_vertices = len(self.kb_node_phrase_to_id)
-        self.g = ig.Graph(n_vertices, edges)
+        # self.g = ig.Graph(n_vertices, edges)
 
-        self.g.es['weight'] = [self.graph_plus[(v1, v3)] for v1, v3 in edges]
+        # self.g.es['weight'] = [self.graph_plus[(v1, v3)] for v1, v3 in edges]
+        self.g = nx.Graph()
+        self.g.add_nodes_from(range(n_vertices))
+        self.g.add_edges_from(edges)
+        weights = {(v1, v3): self.graph_plus[(v1, v3)] for v1, v3 in edges}
+        nx.set_edge_attributes(self.g, weights, 'weight')
         self.logger.info(f'Graph built: num vertices: {n_vertices}, num_edges: {len(edges)}')
 
     def load_node_vectors(self):
@@ -567,10 +573,13 @@ class HippoRAGv3:
         pageranked_probabilities = []
 
         for reset_prob in reset_prob_chunk:
-            pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.config.damping, directed=False,
-                                                            weights='weight', reset=reset_prob, implementation='prpack')
-
-            pageranked_probabilities.append(np.array(pageranked_probs))
+            # pageranked_probs = self.g.personalized_pagerank(vertices=range(len(self.kb_node_phrase_to_id)), damping=self.config.damping, directed=False,
+            #                                                 weights='weight', reset=reset_prob, implementation='prpack')
+            reset_prob = {i: prob for i, prob in enumerate(reset_prob)}
+            pageranked_probs = nx.pagerank(
+                self.g, alpha=self.config.damping, personalization=reset_prob,
+            )
+            pageranked_probabilities.append(np.array(list(pageranked_probs.values())))
 
         return np.array(pageranked_probabilities)
 
